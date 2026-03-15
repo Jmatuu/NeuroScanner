@@ -31,6 +31,30 @@ const ZONA_COLORS = {
 };
 
 let zonaConteo = { OJOS: 0, NARIZ: 0, BOCA: 0, OTRO: 0 };
+// ── Theme ──────────────────────────────────────────────────────────────────
+function toggleTheme() {
+  const html  = document.documentElement;
+  const icon  = document.getElementById('themeIcon');
+  const atual = html.getAttribute('data-theme');
+
+  if (atual === 'light') {
+    html.setAttribute('data-theme', 'dark');
+    icon.textContent = '☀️';
+    localStorage.setItem('theme', 'dark');
+  } else {
+    html.setAttribute('data-theme', 'light');
+    icon.textContent = '🌙';
+    localStorage.setItem('theme', 'light');
+  }
+}
+
+// Cargar tema guardado al iniciar
+(function() {
+  const saved = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', saved);
+  const icon = document.getElementById('themeIcon');
+  if (icon) icon.textContent = saved === 'light' ? '🌙' : '☀️';
+})();
 
 function buildZonaList() {
   const el = document.getElementById('zonaList');
