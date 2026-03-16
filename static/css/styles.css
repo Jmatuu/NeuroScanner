@@ -392,7 +392,6 @@ main {
 .bar-fill.active { background: var(--accent); }
 
 /* ── Card ojos ── */
-.card-eyes {}
 
 .eyes-display { display: flex; gap: 12px; justify-content: center; margin-top: 8px; }
 
