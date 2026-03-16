@@ -45,7 +45,7 @@ class DetectorOcular:
         sup = landmarks[indices_parpado[1]]
         inf = landmarks[indices_parpado[5]]
         dy  = abs((sup.y - inf.y) * h)
-        return dy > 6, round(dy, 1)
+        return dy > 3, round(dy, 1)
     
     def rostro_valido(self, landmarks, h, w):
         try:
