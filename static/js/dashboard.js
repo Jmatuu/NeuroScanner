@@ -1,5 +1,7 @@
 const API_BASE = 'http://localhost:8000';
-document.getElementById('apiBaseDisplay').textContent = API_BASE;
+if (document.getElementById('apiBaseDisplay')) {
+  document.getElementById('apiBaseDisplay').textContent = API_BASE;
+}
 
 // ── State ──────────────────────────────────────────────────────────────────
 let currentSessionId = null;
@@ -31,6 +33,18 @@ const ZONA_COLORS = {
 };
 
 let zonaConteo = { OJOS: 0, NARIZ: 0, BOCA: 0, OTRO: 0 };
+// ── Modal ──────────────────────────────────────────────────────────────────
+function abrirModal() {
+  document.getElementById('modal').classList.add('open');
+  document.getElementById('modalOverlay').classList.add('open');
+  document.getElementById('patientId').focus();
+}
+
+function cerrarModal() {
+  document.getElementById('modal').classList.remove('open');
+  document.getElementById('modalOverlay').classList.remove('open');
+}
+
 // ── Theme ──────────────────────────────────────────────────────────────────
 function toggleTheme() {
   const html  = document.documentElement;
@@ -230,8 +244,7 @@ function updateUI(data) {
   if (dirText) dirText.textContent = zona;
 
   // Zona de atención
-  document.getElementById('zonaIcon').textContent  = ZONA_ICONS[zona]  || '❓';
-  document.getElementById('zonaName').textContent  = zona;
+  document.getElementById('zonaName').textContent = zona;
   updateZonaBars(zona);
 
   // Ojos
@@ -255,6 +268,9 @@ function updateUI(data) {
   // Status
   document.getElementById('statusDot').classList.add('live');
   document.getElementById('statusText').textContent = 'en vivo';
+  // Status dot en header
+  document.getElementById('sqDot').classList.add('live');
+  document.getElementById('sqText').textContent = document.getElementById('infoPatient').textContent;
 // Calcular duración entre frames para promedio
   if (currentSessionId) {
     const ahora = Date.now();
@@ -323,6 +339,7 @@ async function startSession() {
     });
     const data = await res.json();
     currentSessionId = data.session_id;
+    cerrarModal();
     const edad  = document.getElementById('patientAge').value;
     const grupo = calcularGrupo(edad);
     document.getElementById('infoName').textContent  = document.getElementById('patientName').value || '—';
@@ -337,6 +354,7 @@ async function startSession() {
     document.getElementById('infoStart').textContent     = new Date(data.started_at).toLocaleTimeString('es-EC');
     document.getElementById('infoRecords').textContent   = '0';
     document.getElementById('btnStart').disabled = true;
+    document.getElementById('btnNuevaSesion').textContent = '+ Nueva sesión';
     document.getElementById('btnEnd').disabled   = false;
     document.getElementById('btnExport').disabled = false;
     pollInterval = setInterval(pollData, 500);
@@ -363,6 +381,8 @@ async function endSession() {
     document.getElementById('statusDot').classList.remove('live');
     document.getElementById('statusText').textContent = 'sesión terminada';
     document.getElementById('btnExport').disabled = false;
+    document.getElementById('sqDot').classList.remove('live');
+    document.getElementById('sqText').textContent = 'Sin sesión';
   } catch(e) {
     showToast('Error al terminar sesión', 'error');
   }

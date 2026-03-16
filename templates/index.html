@@ -1,18 +1,28 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="es" data-theme="dark">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>NeuroScan · Eye Tracking Dashboard</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
   <link rel="stylesheet" href="/static/css/styles.css"/>
 </head>
 <body>
 <div class="app">
 
+  <!-- ── Header ── -->
   <header>
-    <div class="logo">Neuro<span>·</span>Scan <span>// Eye Tracking</span></div>
-    <div style="display:flex; align-items:center; gap:16px">
+    <div class="logo"><strong>Neuro</strong><span>·</span>Scan <span>// Eye Tracking</span></div>
+    <div class="header-right">
+      <div class="session-quick" id="sessionQuick">
+        <div class="session-quick-info" id="sessionQuickInfo">
+          <span class="sq-dot" id="sqDot"></span>
+          <span id="sqText">Sin sesión</span>
+        </div>
+        <button class="btn-nueva-sesion" id="btnNuevaSesion" onclick="abrirModal()">
+          + Nueva sesión
+        </button>
+      </div>
       <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()">
         <span id="themeIcon">☀️</span>
       </button>
@@ -23,172 +33,214 @@
     </div>
   </header>
 
-  <main>
-
-    <!-- Gaze canvas -->
-    <div class="card gaze-card">
-      <div class="card-label">Dirección de mirada</div>
-      <canvas id="gazeCanvas"></canvas>
-      <div class="gaze-coords">
-        <div class="coord">
-          <span class="coord-label">X (norm.)</span>
-          <span class="coord-val" id="gazeX">—</span>
-        </div>
-        <div class="coord">
-          <span class="coord-label">Y (norm.)</span>
-          <span class="coord-val" id="gazeY">—</span>
-        </div>
-        <div class="coord">
-          <span class="coord-label">Último update</span>
-          <span class="coord-val" id="lastUpdate" style="font-size:13px;color:var(--muted)">—</span>
-        </div>
-        <div class="coord">
-          <span class="coord-label">Dirección</span>
-          <span class="dir-badge" id="dirBadge">—</span>
-        </div>
+  <!-- ── Modal sesión ── -->
+  <div class="modal-overlay" id="modalOverlay" onclick="cerrarModal()"></div>
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <span class="modal-title">Nueva sesión</span>
+      <button class="modal-close" onclick="cerrarModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-field">
+        <label>ID Paciente</label>
+        <input type="text" id="patientId" placeholder="ej. PAC-001"/>
       </div>
-    </div>
-
-    <!-- Zona de atención -->
-    <div class="card zona-card">
-      <div class="card-label">Zona de atención</div>
-      <div class="zona-main">
-        <span class="zona-icon" id="zonaIcon">👁️</span>
-        <div class="zona-name-big" id="zonaName">—</div>
+      <div class="modal-field">
+        <label>Nombre completo</label>
+        <input type="text" id="patientName" placeholder="Nombre completo"/>
       </div>
-      <div class="zona-list" id="zonaList"></div>
-    </div>
-
-    <!-- Eye state -->
-    <div class="card eyes-card">
-      <div class="card-label">Estado de ojos</div>
-      <div class="eyes-display">
-        <div class="eye-box">
-          <div class="eye-icon">👁️</div>
-          <div class="eye-name">Izquierdo</div>
-          <div class="eye-status open" id="leftEyeStatus">abierto</div>
-        </div>
-        <div class="eye-box">
-          <div class="eye-icon">👁️</div>
-          <div class="eye-name">Derecho</div>
-          <div class="eye-status open" id="rightEyeStatus">abierto</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Blink -->
-    <div class="card blink-card">
-      <div class="card-label">Parpadeos detectados</div>
-      <div class="blink-counter" id="blinkCount">0</div>
-      <div class="blink-flash"><div class="blink-flash-inner" id="blinkFlash"></div></div>
-    </div>
-
-    <!-- Session -->
-    <div class="card session-card">
-      <div class="card-label">Sesión</div>
-      <div class="session-controls">
-
-        <div class="field">
-          <label>ID Paciente</label>
-          <input type="text" id="patientId" placeholder="ej. PAC-001"/>
-        </div>
-        <div class="field">
-          <label>Nombre</label>
-          <input type="text" id="patientName" placeholder="Nombre completo"/>
-        </div>
-        <div class="field">
+      <div class="modal-row">
+        <div class="modal-field">
           <label>Edad</label>
-          <input type="number" id="patientAge" placeholder="años" min="1" max="99" style="width:100px"/>
+          <input type="number" id="patientAge" placeholder="años" min="1" max="99"/>
         </div>
-        <div class="field">
+        <div class="modal-field">
           <label>Grupo</label>
           <div class="grupo-badge" id="grupoBadge">—</div>
         </div>
-        <div class="field">
-          <label>Notas</label>
-          <input type="text" id="sessionNotes" placeholder="opcional"/>
-        </div>
-
-        <button class="btn btn-start" id="btnStart" onclick="startSession()">Iniciar sesión</button>
-        <button class="btn btn-end"   id="btnEnd"   onclick="endSession()"   disabled>Terminar sesión</button>
-        <button class="btn btn-export" id="btnExport" onclick="exportarReporte()" disabled>Exportar reporte</button>
-        
       </div>
-      <div class="session-info">
-        <div class="info-item"><span>ID Sesión</span><span id="infoSessionId">—</span></div>
-        <div class="info-item"><span>Paciente</span><span id="infoPatient">—</span></div>
-        <div class="info-item"><span>Nombre</span><span id="infoName">—</span></div>
-        <div class="info-item"><span>Edad</span><span id="infoAge">—</span></div>
-        <div class="info-item"><span>Grupo</span><span id="infoGrupo">—</span></div>
-        <div class="info-item"><span>Inicio</span><span id="infoStart">—</span></div>
-        <div class="info-item"><span>Registros</span><span id="infoRecords">0</span></div>
-      </div>
-      <p class="api-url">API: <span id="apiBaseDisplay">http://localhost:8000</span> · POST <span>/data</span> para enviar frames</p>
-    </div>
-
-    <!-- Estadísticas TEA -->
-<div class="card stats-card">
-  <div class="card-label">Estadísticas de sesión</div>
-
-  <div class="stats-grid">
-
-    <!-- Barras por zona -->
-    <div class="stats-zonas">
-      <div class="stat-row">
-        <span class="stat-name">OJOS</span>
-        <div class="stat-bar-bg">
-          <div class="stat-bar-fill" id="statBarOjos" style="width:0%; background:#4fffb0"></div>
-        </div>
-        <span class="stat-pct" id="statPctOjos">0%</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-name">NARIZ</span>
-        <div class="stat-bar-bg">
-          <div class="stat-bar-fill" id="statBarNariz" style="width:0%; background:#00ffff"></div>
-        </div>
-        <span class="stat-pct" id="statPctNariz">0%</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-name">BOCA</span>
-        <div class="stat-bar-bg">
-          <div class="stat-bar-fill" id="statBarBoca" style="width:0%; background:#ff6b6b"></div>
-        </div>
-        <span class="stat-pct" id="statPctBoca">0%</span>
-      </div>
-      <div class="stat-row">
-        <span class="stat-name">OTRO</span>
-        <div class="stat-bar-bg">
-          <div class="stat-bar-fill" id="statBarOtro" style="width:0%; background:#4a4f6a"></div>
-        </div>
-        <span class="stat-pct" id="statPctOtro">0%</span>
+      <div class="modal-field">
+        <label>Notas</label>
+        <input type="text" id="sessionNotes" placeholder="opcional"/>
       </div>
     </div>
+    <div class="modal-footer">
+      <button class="btn btn-cancel" onclick="cerrarModal()">Cancelar</button>
+      <button class="btn btn-start" id="btnStart" onclick="startSession()">Iniciar sesión</button>
+    </div>
+  </div>
 
-    <!-- Métricas numéricas -->
-    <div class="stats-metricas">
-       <div class="metrica-box">
-        <span class="metrica-label">Total fijaciones</span>
-        <span class="metrica-val" id="statFijaciones">0</span>
-         </div>
-       <div class="metrica-box">
-        <span class="metrica-label">Dur. promedio</span>
-        <span class="metrica-val" id="statDurProm">— ms</span>
-         </div>
-       <div class="metrica-box">
-        <span class="metrica-label">Total parpadeos</span>
-        <span class="metrica-val" id="statParpadeos">0</span>
-         </div>
-       <div class="metrica-box">
-        <span class="metrica-label">Duración sesión</span>
-        <span class="metrica-val" id="statDurSesion">0:00</span>
+  <main>
+
+    <!-- ── Fila 1: Canvas + Panel derecho ── -->
+    <div class="row-main">
+
+      <!-- Canvas mirada -->
+      <div class="card card-canvas">
+        <div class="card-label">Dirección de mirada</div>
+        <canvas id="gazeCanvas"></canvas>
+        <div class="gaze-coords">
+          <div class="coord">
+            <span class="coord-label">X (norm.)</span>
+            <span class="coord-val" id="gazeX">—</span>
+          </div>
+          <div class="coord">
+            <span class="coord-label">Y (norm.)</span>
+            <span class="coord-val" id="gazeY">—</span>
+          </div>
+          <div class="coord">
+            <span class="coord-label">Último update</span>
+            <span class="coord-val" id="lastUpdate" style="font-size:13px;color:var(--muted)">—</span>
+          </div>
+          <div class="coord">
+            <span class="coord-label">Dirección</span>
+            <span class="dir-badge" id="dirBadge">—</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Panel derecho -->
+      <div class="panel-right">
+
+        <!-- Zona de atención -->
+        <div class="card card-zona">
+          <div class="card-label">Zona de atención</div>
+          <div class="zona-main">
+            <div class="zona-svg-wrap" id="zonaSvgWrap">
+              <!-- SVG ojo animado -->
+              <svg class="eye-svg" viewBox="0 0 80 40" xmlns="http://www.w3.org/2000/svg">
+                <path class="eye-outline" d="M4,20 Q40,2 76,20 Q40,38 4,20 Z"/>
+                <circle class="eye-iris" cx="40" cy="20" r="10"/>
+                <circle class="eye-pupil" cx="40" cy="20" r="5"/>
+                <circle class="eye-shine" cx="43" cy="17" r="2"/>
+              </svg>
+            </div>
+            <div class="zona-name-big" id="zonaName">—</div>
+          </div>
+          <div class="zona-list" id="zonaList"></div>
+        </div>
+
+        <!-- Estado ojos -->
+        <div class="card card-eyes">
+          <div class="card-label">Estado de ojos</div>
+          <div class="eyes-display">
+            <div class="eye-box">
+              <svg class="eye-status-svg" viewBox="0 0 60 30" id="svgEyeIzq">
+                <path class="eye-outline-sm open" d="M2,15 Q30,2 58,15 Q30,28 2,15 Z"/>
+                <circle class="eye-iris-sm" cx="30" cy="15" r="7"/>
+                <circle class="eye-pupil-sm" cx="30" cy="15" r="3.5"/>
+              </svg>
+              <div class="eye-name">Izquierdo</div>
+              <div class="eye-status open" id="leftEyeStatus">abierto</div>
+            </div>
+            <div class="eye-box">
+              <svg class="eye-status-svg" viewBox="0 0 60 30" id="svgEyeDer">
+                <path class="eye-outline-sm open" d="M2,15 Q30,2 58,15 Q30,28 2,15 Z"/>
+                <circle class="eye-iris-sm" cx="30" cy="15" r="7"/>
+                <circle class="eye-pupil-sm" cx="30" cy="15" r="3.5"/>
+              </svg>
+              <div class="eye-name">Derecho</div>
+              <div class="eye-status open" id="rightEyeStatus">abierto</div>
+            </div>
           </div>
         </div>
 
-       </div>
-     </div>
+      </div>
+    </div>
 
-    <!-- Log -->
-    <div class="card log-card">
+    <!-- ── Fila 2: Métricas rápidas ── -->
+    <div class="row-metrics">
+      <div class="card card-metric">
+        <div class="metric-icon">👁</div>
+        <div class="metric-val" id="blinkCount">0</div>
+        <div class="metric-lbl">Parpadeos</div>
+        <div class="blink-flash"><div class="blink-flash-inner" id="blinkFlash"></div></div>
+      </div>
+      <div class="card card-metric">
+        <div class="metric-icon">📍</div>
+        <div class="metric-val" id="statFijaciones">0</div>
+        <div class="metric-lbl">Fijaciones</div>
+      </div>
+      <div class="card card-metric">
+        <div class="metric-icon">⏱</div>
+        <div class="metric-val" id="statDurProm">— ms</div>
+        <div class="metric-lbl">Dur. promedio</div>
+      </div>
+      <div class="card card-metric">
+        <div class="metric-icon">🕐</div>
+        <div class="metric-val" id="statDurSesion">0:00</div>
+        <div class="metric-lbl">Duración sesión</div>
+      </div>
+    </div>
+
+    <!-- ── Fila 3: Estadísticas ── -->
+    <div class="card card-stats">
+      <div class="card-label">Estadísticas de sesión</div>
+      <div class="stats-grid">
+        <div class="stats-zonas">
+          <div class="stat-row">
+            <span class="stat-name">OJOS</span>
+            <div class="stat-bar-bg">
+              <div class="stat-bar-fill" id="statBarOjos" style="width:0%;background:#00b4d8"></div>
+            </div>
+            <span class="stat-pct" id="statPctOjos">0%</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-name">NARIZ</span>
+            <div class="stat-bar-bg">
+              <div class="stat-bar-fill" id="statBarNariz" style="width:0%;background:#00ffff"></div>
+            </div>
+            <span class="stat-pct" id="statPctNariz">0%</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-name">BOCA</span>
+            <div class="stat-bar-bg">
+              <div class="stat-bar-fill" id="statBarBoca" style="width:0%;background:#ff6b6b"></div>
+            </div>
+            <span class="stat-pct" id="statPctBoca">0%</span>
+          </div>
+          <div class="stat-row">
+            <span class="stat-name">OTRO</span>
+            <div class="stat-bar-bg">
+              <div class="stat-bar-fill" id="statBarOtro" style="width:0%;background:#64748b"></div>
+            </div>
+            <span class="stat-pct" id="statPctOtro">0%</span>
+          </div>
+        </div>
+        <div class="stats-metricas">
+          <div class="metrica-box">
+            <span class="metrica-label">Paciente</span>
+            <span class="metrica-val" id="infoPatient" style="font-size:16px">—</span>
+          </div>
+          <div class="metrica-box">
+            <span class="metrica-label">Nombre</span>
+            <span class="metrica-val" id="infoName" style="font-size:14px">—</span>
+          </div>
+          <div class="metrica-box">
+            <span class="metrica-label">Edad</span>
+            <span class="metrica-val" id="infoAge" style="font-size:16px">—</span>
+          </div>
+          <div class="metrica-box">
+            <span class="metrica-label">Grupo</span>
+            <span class="metrica-val" id="infoGrupo" style="font-size:16px">—</span>
+          </div>
+        </div>
+      </div>
+      <div class="session-actions">
+        <div class="session-info-bar">
+          <div class="info-item"><span>ID Sesión</span><span id="infoSessionId">—</span></div>
+          <div class="info-item"><span>Inicio</span><span id="infoStart">—</span></div>
+          <div class="info-item"><span>Registros</span><span id="infoRecords">0</span></div>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-end" id="btnEnd" onclick="endSession()" disabled>Terminar sesión</button>
+          <button class="btn btn-export" id="btnExport" onclick="exportarReporte()" disabled>Exportar reporte</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Fila 4: Registro ── -->
+    <div class="card card-log">
       <div class="card-label">Registro de datos</div>
       <div class="log-table-wrap">
         <table>
