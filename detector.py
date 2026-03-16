@@ -17,7 +17,7 @@ class DetectorOcular:
         self.zona_actual         = None
         self.TIEMPO_MIN_FIJACION = 0.1
 
-        self.cap = cv2.VideoCapture(0)
+        self.cap = cv2.VideoCapture(1) # Configuracion de la camara 
 
         mp_face_mesh   = mp.solutions.face_mesh
         self.face_mesh = mp_face_mesh.FaceMesh(
