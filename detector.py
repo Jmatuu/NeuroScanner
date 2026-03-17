@@ -18,7 +18,8 @@ class DetectorOcular:
         self.TIEMPO_MIN_FIJACION = 0.1
 
         self.cap = cv2.VideoCapture(1) # Configuracion de la camara 
-
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 210)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 210)
         mp_face_mesh   = mp.solutions.face_mesh
         self.face_mesh = mp_face_mesh.FaceMesh(
             max_num_faces=1,
@@ -327,7 +328,7 @@ class DetectorOcular:
             archivo.write(f"BOCA:  {conteo['BOCA']}  fijaciones ({round((conteo['BOCA']  / total) * 100)}%)\n\n")
             archivo.write(f"{patron}\n")
 
-        print(f"\n✅ Archivos guardados:")
+        print(f"\n Archivos guardados:")
         print(f"   📄 {nombre_csv}")
         print(f"   📋 {nombre_txt}")
 
