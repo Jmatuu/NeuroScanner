@@ -1,9 +1,12 @@
+import threading
+import queue
+import time
+from datetime import datetime
+
 import cv2
 import mediapipe as mp
 import numpy as np
-import time
-import requests 
-from datetime import datetime
+import requests
 
 class DetectorOcular:
 
@@ -16,10 +19,16 @@ class DetectorOcular:
         self.inicio_fijacion     = None
         self.zona_actual         = None
         self.TIEMPO_MIN_FIJACION = 0.1
+        self._t_zonas    = 0
+        self._t_stats    = 0
+        self._zona_cache = "OJOS"
+        self._emocion_cache   = "NEUTRAL"
+        self._confianza_cache = 0.0
+        self._t_emocion       = 0
 
-        self.cap = cv2.VideoCapture(1) # Configuracion de la camara 
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 210)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 210)
+        self.cap = cv2.VideoCapture(0) # Configuracion de la camara 
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  360)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
         mp_face_mesh   = mp.solutions.face_mesh
         self.face_mesh = mp_face_mesh.FaceMesh(
             max_num_faces=1,
@@ -28,10 +37,14 @@ class DetectorOcular:
             min_tracking_confidence=0.7
         )
 
-        # Mapa de calor y dashboard
-        self.mapa_calor     = None
-        self.mostrar_calor  = False
+        # Dashboard
         self.session_id_web = None
+        self._cola_envio = queue.Queue(maxsize=10)
+        self._ultimo_envio = 0
+        self._ultimo_left  = True
+        self._ultimo_right = True
+        self._hilo_envio = threading.Thread(target=self._worker_envio, daemon=True)
+        self._hilo_envio.start()
 
         # Plano cartesiano  ← al final del __init__
         self.gaze_plot = np.zeros((400, 400, 3), dtype=np.uint8)
@@ -239,52 +252,26 @@ class DetectorOcular:
         estado       = "Abierto" if abierto else "Cerrado"
         color_estado = (0, 255, 0) if abierto else (0, 0, 255)
 
-        offset_x = cx + radio_iris + 8
-        cv2.putText(frame, f"{nombre}",                 (offset_x, cy - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 0), 1)
-        cv2.putText(frame, f"Iris: ({cx},{cy})",         (offset_x, cy - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 130, 0), 1)
-        cv2.putText(frame, f"Pupila r={radio_pupila}px", (offset_x, cy),      cv2.FONT_HERSHEY_SIMPLEX, 0.38, (200, 200, 200), 1)
-        cv2.putText(frame, f"{estado} ({apertura}px)",   (offset_x, cy + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.38, color_estado, 1)
-
         return cx, cy
 
     def dibujar_panel(self, frame, h, w):
         if not self.fijaciones:
             return
 
-        total      = len(self.fijaciones)
-        conteo     = {'OJOS': 0, 'NARIZ': 0, 'BOCA': 0, 'OTRO': 0}
-        duraciones = []
-
+        total  = len(self.fijaciones)
+        conteo = {'OJOS': 0, 'NARIZ': 0, 'BOCA': 0, 'OTRO': 0}
         for f in self.fijaciones:
             if f['zona'] in conteo:
                 conteo[f['zona']] += 1
-            duraciones.append(f['duracion_ms'])
 
-        dpf = round(np.mean(duraciones), 1)
-
-        px, py = 10, h - 160
-        cv2.rectangle(frame, (px, py), (px + 280, h - 10), (20, 20, 20), -1)
-        cv2.rectangle(frame, (px, py), (px + 280, h - 10), (100, 100, 100), 1)
-
-        cv2.putText(frame, "ESTADISTICAS TEA",           (px + 10, py + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,  (255, 255, 255), 1)
-        cv2.putText(frame, f"Total fijaciones: {total}", (px + 10, py + 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-        cv2.putText(frame, f"Dur. promedio: {dpf} ms",   (px + 10, py + 62), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-
-        zonas_info = [
-            ('OJOS',  conteo['OJOS'],  (255, 255, 0)),
-            ('NARIZ', conteo['NARIZ'], (0, 255, 255)),
-            ('BOCA',  conteo['BOCA'],  (0, 100, 255)),
-        ]
-
-        y_offset = py + 85
-        for nombre_zona, cantidad, color in zonas_info:
-            porcentaje  = round((cantidad / total) * 100) if total > 0 else 0
-            largo_barra = int((cantidad / total) * 150)   if total > 0 else 0
-            cv2.putText(frame, f"{nombre_zona}: {cantidad} ({porcentaje}%)",
-                        (px + 10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-            cv2.rectangle(frame, (px + 10, y_offset + 4),
-                          (px + 10 + largo_barra, y_offset + 12), color, -1)
-            y_offset += 28
+        px, py = w - 200, 10
+        cv2.rectangle(frame, (px, py), (w - 5, py + 80), (20, 20, 20), -1)
+        cv2.putText(frame, f"Fij: {total}",
+                    (px + 5, py + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        cv2.putText(frame, f"OJOS:{conteo['OJOS']} NAR:{conteo['NARIZ']} BOC:{conteo['BOCA']}",
+                    (px + 5, py + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        cv2.putText(frame, f"Parp: {self.parpadeos}",
+                    (px + 5, py + 60), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
 
     def guardar_resultados(self):
         if not self.fijaciones:
@@ -332,51 +319,53 @@ class DetectorOcular:
         print(f"   📄 {nombre_csv}")
         print(f"   📋 {nombre_txt}")
 
+    def _worker_envio(self):
+        ultimo_gaze = 0
+        while True:
+            try:
+                dato = self._cola_envio.get(timeout=1)
+                es_evento = dato.get('blink_detected') or dato.get('_forzar')
+                ahora = time.time()
+                # Cada 500ms — detección de emociones
+                if ahora - self._t_emocion >= 0.5:
+                            self._emocion_cache, self._confianza_cache = self.detectar_emocion_landmarks(lm, h, w)
+                            self._t_emocion = ahora
+                
+                if es_evento or (ahora - ultimo_gaze >= 0.5):
+                    requests.post("http://localhost:8000/data", json=dato, timeout=0.5)
+                    if not es_evento:
+                        ultimo_gaze = ahora
+            except queue.Empty:
+                pass
+            except:
+                pass
+
     def send_to_dashboard(self, gaze_x, gaze_y, left_open, right_open, blink, direccion, zona, session_id=None):
+        dato = {
+            "gaze_x":             float(gaze_x),
+            "gaze_y":             float(gaze_y),
+            "left_eye_open":      bool(left_open),
+            "right_eye_open":     bool(right_open),
+            "blink_detected":     bool(blink),
+            "total_parpadeos":    self.parpadeos,
+            "emotion":            direccion,
+            "zona_cara":          zona,
+            "emotion_confidence": 0.9,
+            "session_id":         session_id,
+            "_forzar":            bool(left_open != self._ultimo_left or right_open != self._ultimo_right)
+        }
+
+        self._ultimo_left  = left_open
+        self._ultimo_right = right_open
+
         try:
-            requests.post("http://localhost:8000/data", json={
-                "gaze_x":             float(gaze_x),
-                "gaze_y":             float(gaze_y),
-                "left_eye_open":      bool(left_open),
-                "right_eye_open":     bool(right_open),
-                "blink_detected":     bool(blink),
-                "emotion":            direccion,
-                "zona_cara":          zona,
-                "emotion_confidence": 0.9,
-                "session_id":         session_id
-            }, timeout=0.1)
-        except:
+            # Si es evento importante, limpiar cola y meter el nuevo
+            if dato['blink_detected'] or dato['_forzar']:
+                while not self._cola_envio.empty():
+                    self._cola_envio.get_nowait()
+            self._cola_envio.put_nowait(dato)
+        except queue.Full:
             pass
-
-    def actualizar_mapa_calor(self, gaze_x, gaze_y, h, w):
-        # Convertir coordenadas normalizadas a píxeles
-        px = int(gaze_x * w)
-        py = int(gaze_y * h)
-
-        # Agregar calor en esa zona (radio de influencia = 30px)
-        radio = 30
-        for y in range(max(0, py - radio), min(h, py + radio)):
-            for x in range(max(0, px - radio), min(w, px + radio)):
-                distancia = np.sqrt((x - px)**2 + (y - py)**2)
-                if distancia < radio:
-                    intensidad = 1 - (distancia / radio)
-                    self.mapa_calor[y, x] += intensidad * 0.1
-
-    def dibujar_mapa_calor(self, frame):
-        if self.mapa_calor is None:
-            return frame
-
-        # Normalizar el mapa
-        mapa_norm = self.mapa_calor.copy()
-        if mapa_norm.max() > 0:
-            mapa_norm = (mapa_norm / mapa_norm.max() * 255).astype(np.uint8)
-
-        # Aplicar color
-        mapa_color = cv2.applyColorMap(mapa_norm, cv2.COLORMAP_JET)
-
-        # Mezclar con el frame original
-        resultado = cv2.addWeighted(frame, 0.6, mapa_color, 0.4, 0)
-        return resultado
     
     def dibujar_ejes(self):
         cv2.line(self.gaze_plot, (20, 200), (380, 200), (100, 100, 100), 1)
@@ -386,6 +375,7 @@ class DetectorOcular:
         cv2.putText(self.gaze_plot, "ARRIBA", (210, 30),  cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
         cv2.putText(self.gaze_plot, "ABAJO",  (210, 370), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255,255,255), 1)
         cv2.putText(self.gaze_plot, "(0,0)",  (205, 215), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0,255,255), 1)
+       
 
     def actualizar_plano(self, gaze_x, gaze_y, direccion):
         plot_x = int(200 + gaze_x * 180)
@@ -429,7 +419,49 @@ class DetectorOcular:
             self.parpadeos += 1
 
         return parpadeo_detectado
-    
+    def detectar_emocion_landmarks(self, landmarks, h, w):
+        try:
+            # Puntos de la boca
+            comisura_izq  = landmarks[61]
+            comisura_der  = landmarks[291]
+            labio_sup     = landmarks[13]
+            labio_inf     = landmarks[14]
+            centro_boca   = landmarks[17]
+
+            # Puntos de cejas
+            ceja_izq_int  = landmarks[21]
+            ceja_der_int  = landmarks[251]
+            ceja_izq_ext  = landmarks[46]
+            ceja_der_ext  = landmarks[276]
+
+            # Ratios
+            sonrisa       = ((comisura_izq.y + comisura_der.y) / 2) - centro_boca.y
+            apertura_boca = abs(labio_sup.y - labio_inf.y)
+            
+            # Cejas juntas — distancia horizontal entre cejas internas
+            distancia_cejas = abs(ceja_izq_int.x - ceja_der_int.x)
+            
+            # Cejas bajas — distancia vertical entre ceja y ojo
+            altura_ceja_izq = abs(ceja_izq_int.y - landmarks[159].y)
+            altura_ceja_der = abs(ceja_der_int.y - landmarks[386].y)
+            altura_cejas    = (altura_ceja_izq + altura_ceja_der) / 2
+
+            # Tristeza — comisuras hacia abajo
+            tristeza = ((comisura_izq.y + comisura_der.y) / 2) - centro_boca.y
+           # Clasificar
+            if apertura_boca > 0.04:
+                return "SORPRESA", round(apertura_boca * 10, 2)
+            elif sonrisa < -0.07:
+                return "FELIZ", round(abs(sonrisa) * 10, 2)
+            elif distancia_cejas < 0.30 and altura_cejas < 0.075:
+                return "ENOJO", round((0.075 - altura_cejas) * 10, 2)
+            elif tristeza > -0.03:
+                return "TRISTEZA", round(abs(tristeza) * 10, 2)
+            else:
+                return "NEUTRAL", 1.0
+
+        except:
+            return "NEUTRAL", 0.0
     def ejecutar(self):
         with self.face_mesh:     # ← 8 espacios ✅
             while self.cap.isOpened():
@@ -440,9 +472,6 @@ class DetectorOcular:
                 frame = cv2.flip(frame, 1)
                 h, w, _ = frame.shape
 
-                # Inicializar mapa de calor con el tamaño del frame
-                if self.mapa_calor is None:
-                    self.mapa_calor = np.zeros((h, w), dtype=np.float32)
 
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = self.face_mesh.process(rgb)
@@ -461,9 +490,51 @@ class DetectorOcular:
                             self.dibujar_advertencia(frame, h, w)
                             continue
 
-                        zonas = self.definir_zonas(lm, h, w)
+                        ahora = time.time()
+                        
+ 
+                        # Cada 150ms — calcular zonas y fijaciones
+                        if ahora - self._t_zonas >= 0.1:
+                            zonas = self.definir_zonas(lm, h, w)
+                            zona_ojos, zona_nariz, zona_boca = zonas
 
-                        zona_ojos, zona_nariz, zona_boca = zonas
+                            direccion, gaze_x_norm, gaze_y_norm = self.calcular_direccion_9zonas(lm, h, w)
+                        # Cada 150ms — calcular zonas y fijaciones
+                        if ahora - self._t_zonas >= 0.1:
+                            zonas = self.definir_zonas(lm, h, w)
+                            zona_ojos, zona_nariz, zona_boca = zonas
+
+                            direccion, gaze_x_norm, gaze_y_norm = self.calcular_direccion_9zonas(lm, h, w)
+
+                            if "ARRIBA" in direccion:
+                                self._zona_cache = "OTRO"
+                            elif direccion == "CENTRO":
+                                self._zona_cache = "OJOS"
+                            elif "ABAJO" in direccion and abs(gaze_y_norm) < 0.5:
+                                self._zona_cache = "NARIZ"
+                            else:
+                                self._zona_cache = "BOCA"
+
+                            self._t_zonas = ahora
+
+                        zona_detectada = self._zona_cache
+
+                        # Cada 500ms — detección de emociones
+                        if ahora - self._t_emocion >= 0.1:
+                            self._emocion_cache, self._confianza_cache = self.detectar_emocion_landmarks(lm, h, w)
+                            self._t_emocion = ahora
+                            if "ARRIBA" in direccion:
+                                self._zona_cache = "OTRO"
+                            elif direccion == "CENTRO":
+                                self._zona_cache = "OJOS"
+                            elif "ABAJO" in direccion and abs(gaze_y_norm) < 0.5:
+                                self._zona_cache = "NARIZ"
+                            else:
+                                self._zona_cache = "BOCA"
+
+                            self._t_zonas = ahora
+
+                        zona_detectada = self._zona_cache
 
                         cv2.rectangle(frame, (zona_ojos[0],  zona_ojos[1]),  (zona_ojos[2],  zona_ojos[3]),  (255, 255, 0), 1)
                         cv2.rectangle(frame, (zona_nariz[0], zona_nariz[1]), (zona_nariz[2], zona_nariz[3]), (0, 255, 255), 1)
@@ -472,25 +543,9 @@ class DetectorOcular:
                         cv2.putText(frame, "Ojos",  (zona_ojos[0],  zona_ojos[1]  - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
                         cv2.putText(frame, "Nariz", (zona_nariz[0], zona_nariz[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                         cv2.putText(frame, "Boca",  (zona_boca[0],  zona_boca[1]  - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 100, 255), 1)
-
+                        cv2.putText(frame, f"Emocion: {self._emocion_cache}",(10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
                         self.dibujar_ojo(frame, lm, self.PARPADO_IZQ, self.IRIS_IZQ, h, w, "Ojo Izq")
                         self.dibujar_ojo(frame, lm, self.PARPADO_DER, self.IRIS_DER, h, w, "Ojo Der")
-
-                        dir_v, dir_h, dx, dy = self.estimar_gaze(lm, self.IRIS_IZQ, self.PARPADO_IZQ, h, w)
-                        direccion, gaze_x_norm, gaze_y_norm = self.calcular_direccion_9zonas(lm, h, w)
-
-                        # Zona cara según dirección vertical
-                        if "ARRIBA" in direccion:
-                            zona_detectada = "OTRO"
-                        elif direccion == "CENTRO":
-                            zona_detectada = "OJOS"
-                        elif "ABAJO" in direccion and abs(gaze_y_norm) < 0.5:
-                            zona_detectada = "NARIZ"
-                        else:
-                            zona_detectada = "BOCA"
-
-                        # Actualizar mapa de calor
-                        self.actualizar_mapa_calor(gaze_x_norm, gaze_y_norm, h, w)
 
                         # Enviar al dashboard
                         abierto_izq, _ = self.ojo_abierto(lm, self.PARPADO_IZQ, h, w)
@@ -510,12 +565,7 @@ class DetectorOcular:
 
                         cv2.putText(frame, f"Zona: {zona_detectada}",
                                     (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
-
-                        cv2.putText(frame, f"X:{gaze_x_norm:.2f} Y:{gaze_y_norm:.2f}",
-                                    (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-                        cv2.putText(frame, f"Parpadeos: {self.parpadeos}",
-                                    (10, 175), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+                        
 
                         tiempo_ahora = time.time()
 
@@ -539,13 +589,13 @@ class DetectorOcular:
                             self.zona_actual = zona_detectada
                             self.inicio_fijacion = tiempo_ahora
 
-                self.dibujar_panel(frame, h, w)
+                if ahora - self._t_stats >= 0.5:
+                    self._t_stats = ahora
 
-                if self.mostrar_calor and self.mapa_calor is not None:
-                    frame = self.dibujar_mapa_calor(frame)
+                self.dibujar_panel(frame, h, w) 
 
-                cv2.putText(frame, "H: mapa calor | Q: salir", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                cv2.putText(frame, "Q: salir | R: reset plano", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
                 if results.multi_face_landmarks:
                     self.actualizar_plano(gaze_x_norm, gaze_y_norm, direccion)
@@ -560,8 +610,6 @@ class DetectorOcular:
                     break
                 if tecla == ord('q') or tecla == ord('Q'):
                     break
-                elif tecla == ord('h') or tecla == ord('H'):
-                    self.mostrar_calor = not self.mostrar_calor
                 elif tecla == ord('r') or tecla == ord('R'):
                     self.gaze_plot = np.zeros((400, 400, 3), dtype=np.uint8)
                     self.dibujar_ejes()

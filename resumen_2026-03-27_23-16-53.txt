@@ -1,0 +1,11 @@
+===== RESUMEN SESION TEA =====
+Fecha: 2026-03-27 23:16:53
+
+Total fijaciones:  7
+Duracion promedio: 721.8 ms
+
+OJOS:  4  fijaciones (57%)
+NARIZ: 0 fijaciones (0%)
+BOCA:  0  fijaciones (0%)
+
+PATRON INTERMEDIO: requiere mas analisis

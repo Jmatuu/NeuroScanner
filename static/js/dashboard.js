@@ -258,12 +258,17 @@ function updateUI(data) {
   // Parpadeos
   if (data.blink_detected) {
     blinkCount++;
-    document.getElementById('blinkCount').textContent = blinkCount;
     const flash = document.getElementById('blinkFlash');
     flash.style.width      = '100%';
     flash.style.background = '#4fffb0';
     setTimeout(() => { flash.style.width = '0%'; }, 300);
-  }
+}
+
+if (data.total_parpadeos !== undefined) {
+    document.getElementById('blinkCount').textContent = data.total_parpadeos;
+} else {
+    document.getElementById('blinkCount').textContent = blinkCount;
+}
 
   // Status
   document.getElementById('statusDot').classList.add('live');

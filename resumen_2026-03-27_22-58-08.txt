@@ -1,0 +1,11 @@
+===== RESUMEN SESION TEA =====
+Fecha: 2026-03-27 22:58:08
+
+Total fijaciones:  26
+Duracion promedio: 761.4 ms
+
+OJOS:  16  fijaciones (62%)
+NARIZ: 1 fijaciones (4%)
+BOCA:  0  fijaciones (0%)
+
+PATRON TIPICO: buen contacto visual (OJOS > 60%)
