@@ -229,7 +229,10 @@ function drawGaze(x, y, direccion) {
 
 // ── Update UI ──────────────────────────────────────────────────────────────
 function updateUI(data) {
-  const dir = (data.emotion || 'CENTRO').toUpperCase();
+  // Dirección de mirada viene en 'emotion' (campo legacy) — zona_cara es la zona facial
+  const dir  = (data.emotion || 'CENTRO').toUpperCase();
+  const zona = (data.zona_cara || 'OTRO').toUpperCase();
+
   drawGaze(data.gaze_x, data.gaze_y, dir);
   document.getElementById('gazeX').textContent = data.gaze_x.toFixed(3);
   document.getElementById('gazeY').textContent = data.gaze_y.toFixed(3);
@@ -238,12 +241,11 @@ function updateUI(data) {
   document.getElementById('lastUpdate').textContent =
     now.toLocaleTimeString('es-EC', {hour12: false});
 
-  // Dirección
-  const zona    = (data.emotion || 'OTRO').toUpperCase();
-  const dirText = document.getElementById('dirBadge');
-  if (dirText) dirText.textContent = zona;
+  // Dirección badge
+  const dirBadge = document.getElementById('dirBadge');
+  if (dirBadge) dirBadge.textContent = dir;
 
-  // Zona de atención
+  // Zona de atención facial
   document.getElementById('zonaName').textContent = zona;
   updateZonaBars(zona);
 
@@ -262,21 +264,24 @@ function updateUI(data) {
     flash.style.width      = '100%';
     flash.style.background = '#4fffb0';
     setTimeout(() => { flash.style.width = '0%'; }, 300);
-}
+  }
 
-if (data.total_parpadeos !== undefined) {
+  if (data.total_parpadeos !== undefined) {
     document.getElementById('blinkCount').textContent = data.total_parpadeos;
-} else {
+  } else {
     document.getElementById('blinkCount').textContent = blinkCount;
-}
+  }
+
+  // Emoción y stimming
+  updateEmocionStimming(data);
 
   // Status
   document.getElementById('statusDot').classList.add('live');
   document.getElementById('statusText').textContent = 'en vivo';
-  // Status dot en header
   document.getElementById('sqDot').classList.add('live');
   document.getElementById('sqText').textContent = document.getElementById('infoPatient').textContent;
-// Calcular duración entre frames para promedio
+
+  // Duración entre frames
   if (currentSessionId) {
     const ahora = Date.now();
     if (updateUI._ultimo) {
@@ -285,6 +290,7 @@ if (data.total_parpadeos !== undefined) {
     }
     updateUI._ultimo = ahora;
   }
+
   // Log row
   if (currentSessionId) {
     recordCount++;
@@ -294,12 +300,75 @@ if (data.total_parpadeos !== undefined) {
   actualizarStats(data);
 }
 
+// ── Emoción y Stimming ─────────────────────────────────────────────────────
+const EMOCION_ICONOS = {
+  'NEUTRAL':      '😐',
+  'SOBRECARGA':   '😰',
+  'FRUSTRACION':  '😤',
+  'ANSIEDAD':     '😟',
+  'SORPRESA':     '😲',
+  'HIPER-FOCO':   '🔍',
+  'VOCALIZACION': '🗣',
+  'CALIBRANDO...':'⏳',
+};
+
+const EMOCION_CLASES = {
+  'NEUTRAL':      'emocion-neutral',
+  'SOBRECARGA':   'emocion-sobrecarga',
+  'FRUSTRACION':  'emocion-frustracion',
+  'ANSIEDAD':     'emocion-ansiedad',
+  'SORPRESA':     'emocion-sorpresa',
+  'HIPER-FOCO':   'emocion-hiperfoco',
+  'VOCALIZACION': 'emocion-vocalizacion',
+};
+
+function updateEmocionStimming(data) {
+  // ── Emoción ──
+  const emocion    = (data.emotion || 'NEUTRAL').toUpperCase();
+  const confianza  = Math.round((data.emotion_confidence || 0) * 100);
+  const icono      = EMOCION_ICONOS[emocion] || '😐';
+  const claseColor = EMOCION_CLASES[emocion] || 'emocion-neutral';
+
+  document.getElementById('emocionIcono').textContent  = icono;
+
+  const nombreEl = document.getElementById('emocionNombre');
+  nombreEl.textContent = emocion;
+  nombreEl.className   = 'emocion-nombre ' + claseColor;
+
+  document.getElementById('emocionBar').style.width    = confianza + '%';
+  document.getElementById('emocionPct').textContent    = confianza + '%';
+
+  // Color de la barra según emoción
+  const barColors = {
+    'SOBRECARGA': '#f85149', 'FRUSTRACION': '#f97316',
+    'ANSIEDAD': '#eab308',   'SORPRESA': '#a78bfa',
+    'HIPER-FOCO': '#00ffff', 'VOCALIZACION': '#4ade80',
+  };
+  document.getElementById('emocionBar').style.background =
+    barColors[emocion] || 'var(--accent)';
+
+  // ── Stimming ──
+  const stimmingActivo = data.stimming_activo || false;
+  const stimmingTipo   = (data.stimming || 'NINGUNO').toUpperCase();
+
+  const dot  = document.getElementById('stimmingDot');
+  const tipo = document.getElementById('stimmingTipo');
+  dot.className  = 'stimming-dot'  + (stimmingActivo ? ' activo' : '');
+  tipo.className = 'stimming-tipo' + (stimmingActivo ? ' activo' : '');
+  tipo.textContent = stimmingActivo ? stimmingTipo.replace('_', ' ') : 'Sin actividad';
+
+  // Resaltar tag activo
+  document.getElementById('tagRafaga').className   = 'stimming-tag' + (stimmingTipo === 'RAFAGA_PARPADEOS'  ? ' activo' : '');
+  document.getElementById('tagBalanceo').className = 'stimming-tag' + (stimmingTipo === 'BALANCEO_CABEZA'   ? ' activo' : '');
+  document.getElementById('tagGesto').className    = 'stimming-tag' + (stimmingTipo === 'GESTO_REPETITIVO'  ? ' activo' : '');
+}
+
 function addLogRow(data, now) {
   const tbody = document.getElementById('logBody');
   const empty = tbody.querySelector('.empty');
   if (empty) empty.parentElement.remove();
 
-  const zona = (data.emotion || 'OTRO').toUpperCase();
+  const zona = (data.zona_cara || 'OTRO').toUpperCase();
   const tr   = document.createElement('tr');
   tr.innerHTML = `
     <td>${now.toLocaleTimeString('es-EC', {hour12:false})}</td>

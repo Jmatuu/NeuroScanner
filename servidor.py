@@ -62,6 +62,17 @@ def iniciar_sesion():
     })
 
 
+@app.route('/session/current', methods=['GET'])
+def sesion_actual():
+    if sesion_activa and sesion_activa in sesiones:
+        return jsonify({
+            'session_id': sesion_activa,
+            'patient_id': sesiones[sesion_activa]['patient_id'],
+            'started_at': sesiones[sesion_activa]['started_at']
+        })
+    return jsonify({'session_id': None})
+
+
 @app.route('/session/<session_id>/end', methods=['POST'])
 def terminar_sesion(session_id):
     global sesion_activa

@@ -22,9 +22,18 @@ class DetectorOcular:
         self._t_zonas    = 0
         self._t_stats    = 0
         self._zona_cache = "OJOS"
-        self._emocion_cache   = "NEUTRAL"
-        self._confianza_cache = 0.0
-        self._t_emocion       = 0
+        # Sistema de emociones nuevo
+        self._calibrado          = False
+        self._buffer_calibracion = []
+        self._buffer_max         = 60   # Zona segura: luz y distancia controladas → menos frames necesarios
+        self._linea_base         = {}
+        self._emocion_cache      = "CALIBRANDO..."
+        self._confianza_cache    = 0.0
+        self._t_emocion          = 0
+        self._persistencia       = {
+    'EAR': 0, 'CORRUGADOR': 0, 'TENSION_LABIAL': 0, 'MAR': 0
+}
+
 
         self.cap = cv2.VideoCapture(0) # Configuracion de la camara 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  360)
@@ -46,6 +55,10 @@ class DetectorOcular:
         self._hilo_envio = threading.Thread(target=self._worker_envio, daemon=True)
         self._hilo_envio.start()
 
+        # Hilo que sincroniza session_id_web con el servidor
+        self._hilo_sesion = threading.Thread(target=self._worker_sesion, daemon=True)
+        self._hilo_sesion.start()
+
         # Plano cartesiano  ← al final del __init__
         self.gaze_plot = np.zeros((400, 400, 3), dtype=np.uint8)
         self.dibujar_ejes()
@@ -54,6 +67,30 @@ class DetectorOcular:
         self.parpadeos          = 0
         self.ojo_izq_cerrado    = False
         self.ojo_der_cerrado    = False
+
+        # Deteccion de stimming
+        self._stimming_activo        = False
+        self._stimming_cache         = "NINGUNO"
+        # Parpadeos en rafaga
+        self._historial_parpadeos    = []   # timestamps de parpadeos recientes
+        self._RAFAGA_VENTANA         = 2.0  # segundos
+        self._RAFAGA_MIN             = 3    # parpadeos minimos en la ventana
+        # Balanceo de cabeza
+        self._historial_yaw          = []   # (timestamp, yaw)
+        self._historial_roll         = []   # (timestamp, roll)
+        self._BALANCEO_VENTANA       = 3.0  # segundos
+        self._BALANCEO_CAMBIOS_MIN   = 4    # cambios de direccion minimos
+        self._BALANCEO_UMBRAL        = 8.0  # grados minimos por cambio
+        # Gestos faciales repetitivos
+        self._historial_labial       = []   # (timestamp, tension_labial)
+        self._historial_corrugador   = []   # (timestamp, corrugador)
+        self._GESTO_VENTANA          = 3.0  # segundos
+        self._GESTO_CICLOS_MIN       = 3    # ciclos minimos detectados
+        self._ema = {
+    'EAR': None, 'CORRUGADOR': None, 
+    'TENSION_LABIAL': None, 'MAR': None
+}
+        self._alpha_ema = 0.3
 
     def ojo_abierto(self, landmarks, indices_parpado, h, w):
         sup = landmarks[indices_parpado[1]]
@@ -319,6 +356,23 @@ class DetectorOcular:
         print(f"   📄 {nombre_csv}")
         print(f"   📋 {nombre_txt}")
 
+    def _worker_sesion(self):
+        """Consulta /session/current cada 5 segundos y actualiza session_id_web."""
+        while True:
+            try:
+                res = requests.get("http://localhost:8000/session/current", timeout=1)
+                data = res.json()
+                nuevo_id = data.get('session_id')
+                if nuevo_id != self.session_id_web:
+                    self.session_id_web = nuevo_id
+                    if nuevo_id:
+                        print(f"✅ Sesion detectada: {nuevo_id[:8]}...")
+                    else:
+                        print("⏸ Sin sesion activa")
+            except:
+                pass
+            time.sleep(5)
+
     def _worker_envio(self):
         ultimo_gaze = 0
         while True:
@@ -327,9 +381,6 @@ class DetectorOcular:
                 es_evento = dato.get('blink_detected') or dato.get('_forzar')
                 ahora = time.time()
                 # Cada 500ms — detección de emociones
-                if ahora - self._t_emocion >= 0.5:
-                            self._emocion_cache, self._confianza_cache = self.detectar_emocion_landmarks(lm, h, w)
-                            self._t_emocion = ahora
                 
                 if es_evento or (ahora - ultimo_gaze >= 0.5):
                     requests.post("http://localhost:8000/data", json=dato, timeout=0.5)
@@ -348,9 +399,11 @@ class DetectorOcular:
             "right_eye_open":     bool(right_open),
             "blink_detected":     bool(blink),
             "total_parpadeos":    self.parpadeos,
-            "emotion":            direccion,
+            "emotion":            self._emocion_cache,
+            "emotion_confidence": float(self._confianza_cache),
             "zona_cara":          zona,
-            "emotion_confidence": 0.9,
+            "stimming":           self._stimming_cache,
+            "stimming_activo":    bool(self._stimming_activo),
             "session_id":         session_id,
             "_forzar":            bool(left_open != self._ultimo_left or right_open != self._ultimo_right)
         }
@@ -419,93 +472,320 @@ class DetectorOcular:
             self.parpadeos += 1
 
         return parpadeo_detectado
-    def detectar_emocion_landmarks(self, landmarks, h, w):
+    
+    def _calcular_metricas(self, landmarks):
         try:
-            # Puntos de la boca
-            comisura_izq  = landmarks[61]
-            comisura_der  = landmarks[291]
-            labio_sup     = landmarks[13]
-            labio_inf     = landmarks[14]
-            centro_boca   = landmarks[17]
+            # Distancia interpupilar para normalizar
+            p33  = landmarks[33]
+            p263 = landmarks[263]
+            dip  = np.sqrt((p33.x - p263.x)**2 + (p33.y - p263.y)**2)
+            if dip < 0.001:
+                return None
 
-            # Puntos de cejas
-            ceja_izq_int  = landmarks[21]
-            ceja_der_int  = landmarks[251]
-            ceja_izq_ext  = landmarks[46]
-            ceja_der_ext  = landmarks[276]
+            # EAR ojo izquierdo
+            ear_v = np.sqrt((landmarks[159].x - landmarks[145].x)**2 +
+                            (landmarks[159].y - landmarks[145].y)**2)
+            ear_h = np.sqrt((landmarks[33].x  - landmarks[133].x)**2 +
+                            (landmarks[33].y  - landmarks[133].y)**2)
+            ear   = (ear_v / ear_h) / dip if ear_h > 0 else 0
 
-            # Ratios
-            sonrisa       = ((comisura_izq.y + comisura_der.y) / 2) - centro_boca.y
-            apertura_boca = abs(labio_sup.y - labio_inf.y)
+            # Corrugador — promedio de distancia entre pares de landmarks especificos
+            # Landmarks 107,105 (ceja izq) y 336,334 (ceja der) recomendados por especialista
+            corr_izq = np.sqrt((landmarks[107].x - landmarks[105].x)**2 +
+                               (landmarks[107].y - landmarks[105].y)**2)
+            corr_der = np.sqrt((landmarks[336].x - landmarks[334].x)**2 +
+                               (landmarks[336].y - landmarks[334].y)**2)
+            corrugador = ((corr_izq + corr_der) / 2) / dip
+
+            # Tension labial — ancho de comisuras
+            tension_labial = np.sqrt((landmarks[61].x - landmarks[291].x)**2 +
+                                     (landmarks[61].y - landmarks[291].y)**2) / dip
+
+            # MAR — apertura vertical de boca
+            mar = np.sqrt((landmarks[13].x - landmarks[14].x)**2 +
+                          (landmarks[13].y - landmarks[14].y)**2) / dip
             
-            # Cejas juntas — distancia horizontal entre cejas internas
-            distancia_cejas = abs(ceja_izq_int.x - ceja_der_int.x)
+            # Definir metricas como diccionario con valores iniciales
+            metricas = {
+                'EAR': ear,
+                'CORRUGADOR': corrugador,
+                'TENSION_LABIAL': tension_labial,
+                'MAR': mar
+            }
             
-            # Cejas bajas — distancia vertical entre ceja y ojo
-            altura_ceja_izq = abs(ceja_izq_int.y - landmarks[159].y)
-            altura_ceja_der = abs(ceja_der_int.y - landmarks[386].y)
-            altura_cejas    = (altura_ceja_izq + altura_ceja_der) / 2
-
-            # Tristeza — comisuras hacia abajo
-            tristeza = ((comisura_izq.y + comisura_der.y) / 2) - centro_boca.y
-           # Clasificar
-            if apertura_boca > 0.04:
-                return "SORPRESA", round(apertura_boca * 10, 2)
-            elif sonrisa < -0.07:
-                return "FELIZ", round(abs(sonrisa) * 10, 2)
-            elif distancia_cejas < 0.30 and altura_cejas < 0.075:
-                return "ENOJO", round((0.075 - altura_cejas) * 10, 2)
-            elif tristeza > -0.03:
-                return "TRISTEZA", round(abs(tristeza) * 10, 2)
-            else:
-                return "NEUTRAL", 1.0
+            # Aplicar filtro EMA
+            for key in ['EAR', 'CORRUGADOR', 'TENSION_LABIAL', 'MAR']:
+                if self._ema[key] is None:
+                    self._ema[key] = metricas[key]
+                else:
+                    self._ema[key] = round(
+                        self._alpha_ema * metricas[key] + 
+                        (1 - self._alpha_ema) * self._ema[key], 4
+                    )
+                metricas[key] = self._ema[key]
+            
+            return metricas
 
         except:
-            return "NEUTRAL", 0.0
+            return None
+    def _calcular_angulos_cabeza(self, landmarks):
+        try:
+            # Landmarks rigidos
+            nariz     = landmarks[1]
+            menton    = landmarks[152]
+            ojo_izq   = landmarks[33]
+            ojo_der   = landmarks[263]
+            temp_izq  = landmarks[234]
+            temp_der  = landmarks[454]
+
+            # Yaw — giro izquierda/derecha
+            dist_izq = abs(nariz.x - temp_izq.x)
+            dist_der = abs(nariz.x - temp_der.x)
+            yaw = (dist_izq - dist_der) / (dist_izq + dist_der + 1e-5) * 90
+
+            # Roll — inclinacion lateral
+            roll = np.degrees(np.arctan2(
+                ojo_der.y - ojo_izq.y,
+                ojo_der.x - ojo_izq.x
+            ))
+
+            # Pitch — inclinacion arriba/abajo
+            frente = landmarks[10]
+            pitch = np.degrees(np.arctan2(
+                menton.y - frente.y,
+                menton.z - frente.z + 1e-5
+            ))
+
+            return round(yaw, 1), round(pitch, 1), round(roll, 1)
+
+        except:
+            return 0.0, 0.0, 0.0
+
+    def _rostro_frontal(self, landmarks):
+        try:
+            # Zona segura: camara fija a 40-50cm, altura de ojos → angulos mas estrictos
+            MAX_YAW   = 20   # giro izquierda/derecha
+            MAX_PITCH = 15   # inclinacion arriba/abajo
+            MAX_ROLL  = 10   # inclinacion lateral
+            yaw, pitch, roll = self._calcular_angulos_cabeza(landmarks)
+            return abs(yaw) < MAX_YAW and abs(pitch) < MAX_PITCH and abs(roll) < MAX_ROLL
+        except:
+            return True
+    
+    def _actualizar_calibracion(self, landmarks):
+        if self._calibrado:
+            return
+
+        if not self._rostro_frontal(landmarks):
+            
+            return
+
+        metricas = self._calcular_metricas(landmarks)
+        if metricas is None:
+            
+            return
+
+        self._buffer_calibracion.append(metricas)
+
+
+        if len(self._buffer_calibracion) >= self._buffer_max:
+            for key in ['EAR', 'CORRUGADOR', 'TENSION_LABIAL', 'MAR']:
+                valores = [f[key] for f in self._buffer_calibracion]
+                self._linea_base[key] = round(float(np.median(valores)), 4)
+
+            self._calibrado = True
+            self._emocion_cache = "NEUTRAL"
+            print(f"Calibracion completa: {self._linea_base}")
+
+    def _detectar_stimming(self, landmarks, parpadeo_detectado):
+        """Detecta tres tipos de stimming: rafaga de parpadeos, balanceo de cabeza
+        y gestos faciales repetitivos. Retorna (tipo_stimming, activo)."""
+        ahora = time.time()
+
+        # ── 1. Parpadeos en rafaga ─────────────────────────────────────────
+        if parpadeo_detectado:
+            self._historial_parpadeos.append(ahora)
+
+        # Limpiar parpadeos fuera de la ventana
+        self._historial_parpadeos = [
+            t for t in self._historial_parpadeos
+            if ahora - t <= self._RAFAGA_VENTANA
+        ]
+        rafaga = len(self._historial_parpadeos) >= self._RAFAGA_MIN
+
+        # ── 2. Balanceo de cabeza ──────────────────────────────────────────
+        try:
+            yaw, pitch, roll = self._calcular_angulos_cabeza(landmarks)
+
+            self._historial_yaw.append((ahora, yaw))
+            self._historial_roll.append((ahora, roll))
+
+            # Limpiar fuera de ventana
+            self._historial_yaw  = [(t, v) for t, v in self._historial_yaw
+                                    if ahora - t <= self._BALANCEO_VENTANA]
+            self._historial_roll = [(t, v) for t, v in self._historial_roll
+                                    if ahora - t <= self._BALANCEO_VENTANA]
+
+            def contar_cambios(historial, umbral):
+                """Cuenta cuantas veces la señal cambia de direccion."""
+                if len(historial) < 3:
+                    return 0
+                valores = [v for _, v in historial]
+                cambios = 0
+                for i in range(1, len(valores) - 1):
+                    delta_ant = valores[i]     - valores[i - 1]
+                    delta_sig = valores[i + 1] - valores[i]
+                    if abs(delta_ant) >= umbral and delta_ant * delta_sig < 0:
+                        cambios += 1
+                return cambios
+
+            cambios_yaw  = contar_cambios(self._historial_yaw,  self._BALANCEO_UMBRAL)
+            cambios_roll = contar_cambios(self._historial_roll, self._BALANCEO_UMBRAL)
+            balanceo = (cambios_yaw >= self._BALANCEO_CAMBIOS_MIN or
+                        cambios_roll >= self._BALANCEO_CAMBIOS_MIN)
+        except:
+            balanceo = False
+
+        # ── 3. Gestos faciales repetitivos ────────────────────────────────
+        try:
+            metricas = self._calcular_metricas(landmarks)
+            if metricas:
+                self._historial_labial.append((ahora, metricas['TENSION_LABIAL']))
+                self._historial_corrugador.append((ahora, metricas['CORRUGADOR']))
+
+            # Limpiar fuera de ventana
+            self._historial_labial     = [(t, v) for t, v in self._historial_labial
+                                          if ahora - t <= self._GESTO_VENTANA]
+            self._historial_corrugador = [(t, v) for t, v in self._historial_corrugador
+                                          if ahora - t <= self._GESTO_VENTANA]
+
+            def contar_ciclos(historial):
+                """Cuenta picos alternantes (subida + bajada = 1 ciclo)."""
+                if len(historial) < 4:
+                    return 0
+                valores  = [v for _, v in historial]
+                media    = np.mean(valores)
+                std      = np.std(valores)
+                if std < 0.002:   # señal demasiado plana → no hay gesto
+                    return 0
+                ciclos   = 0
+                encima   = valores[0] > media
+                for v in valores[1:]:
+                    if encima and v < media:
+                        ciclos += 1
+                        encima  = False
+                    elif not encima and v > media:
+                        encima  = True
+                return ciclos
+
+            ciclos_labial     = contar_ciclos(self._historial_labial)
+            ciclos_corrugador = contar_ciclos(self._historial_corrugador)
+            gesto_repetitivo  = (ciclos_labial     >= self._GESTO_CICLOS_MIN or
+                                 ciclos_corrugador >= self._GESTO_CICLOS_MIN)
+        except:
+            gesto_repetitivo = False
+
+        # ── Resultado final — prioridad: rafaga > balanceo > gesto ────────
+        if rafaga:
+            return "RAFAGA_PARPADEOS", True
+        elif balanceo:
+            return "BALANCEO_CABEZA", True
+        elif gesto_repetitivo:
+            return "GESTO_REPETITIVO", True
+        else:
+            return "NINGUNO", False
+
+    def _detectar_emocion(self, landmarks):
+        if not self._calibrado:
+            return "CALIBRANDO...", 0.0
+
+        metricas = self._calcular_metricas(landmarks)
+        if metricas is None:
+            return self._emocion_cache, self._confianza_cache
+
+        lb = self._linea_base
+
+        # Calcular variaciones porcentuales respecto a linea base
+        var_ear    = (metricas['EAR']            - lb['EAR'])            / (lb['EAR']            + 1e-5) * 100
+        var_corr   = (metricas['CORRUGADOR']     - lb['CORRUGADOR'])     / (lb['CORRUGADOR']     + 1e-5) * 100
+        var_labial = (metricas['TENSION_LABIAL'] - lb['TENSION_LABIAL']) / (lb['TENSION_LABIAL'] + 1e-5) * 100
+
+        # MAR — umbral absoluto (evita valores extremos por baseline cercano a cero)
+        # Zona segura: 40-50cm, luz controlada → umbrales fijos confiables
+        MAR_UMBRAL_ABIERTO = 0.015   # boca entreabierta
+        MAR_UMBRAL_AMPLIO  = 0.030   # boca claramente abierta / vocalizacion
+
+        # Activaciones con umbrales del especialista
+        ear_bajo   = var_ear    < -30
+        ear_alto   = var_ear    >  20
+        corrugador = var_corr   >   8
+        labial     = var_labial >  30
+        mar_alto   = metricas['MAR'] > MAR_UMBRAL_AMPLIO
+
+        # Filtro de persistencia — contar frames consecutivos
+        self._persistencia['EAR']           = self._persistencia['EAR']           + 1 if ear_bajo or ear_alto else 0
+        self._persistencia['CORRUGADOR'] = self._persistencia['CORRUGADOR']       + 1 if corrugador else 0    
+        self._persistencia['TENSION_LABIAL']= self._persistencia['TENSION_LABIAL']+ 1 if labial                else 0
+        self._persistencia['MAR']           = self._persistencia['MAR']           + 1 if mar_alto              else 0
+
+        FRAMES_MIN = 3
+
+        ear_confirmado    = self._persistencia['EAR']            >= FRAMES_MIN
+        corr_confirmado   = self._persistencia['CORRUGADOR']     >= FRAMES_MIN
+        labial_confirmado = self._persistencia['TENSION_LABIAL'] >= FRAMES_MIN
+        mar_confirmado    = self._persistencia['MAR']            >= FRAMES_MIN
+
+        # Firmas emocionales combinadas
+        if ear_bajo and corr_confirmado:
+            return "SOBRECARGA", round(abs(var_corr) / 100, 2)
+        elif ear_alto and not mar_alto:
+            return "SORPRESA", round(abs(var_ear) / 100, 2)
+        elif corr_confirmado and not ear_bajo:
+            return "FRUSTRACION", round(abs(var_corr) / 100, 2)
+        elif labial_confirmado:
+            return "ANSIEDAD", round(abs(var_labial) / 100, 2)
+        elif mar_alto and not ear_bajo:
+            return "VOCALIZACION", round(min(metricas['MAR'] / MAR_UMBRAL_AMPLIO, 1.0), 2)
+        elif ear_confirmado and ear_alto:
+            return "HIPER-FOCO", round(abs(var_ear) / 100, 2)
+        else:
+            return "NEUTRAL", 1.0
+        
     def ejecutar(self):
-        with self.face_mesh:     # ← 8 espacios ✅
+        with self.face_mesh:
             while self.cap.isOpened():
                 ret, frame = self.cap.read()
-                if not ret: 
+                if not ret:
                     break
 
                 frame = cv2.flip(frame, 1)
                 h, w, _ = frame.shape
 
-
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = self.face_mesh.process(rgb)
 
-                # Valores por defecto si no hay rostro válido
                 gaze_x_norm = 0.0
                 gaze_y_norm = 0.0
                 direccion   = "CENTRO"
+                ahora       = time.time()
 
                 if results.multi_face_landmarks:
                     for face in results.multi_face_landmarks:
                         lm = face.landmark
 
-                        # Verificar si el rostro es válido
                         if not self.rostro_valido(lm, h, w):
                             self.dibujar_advertencia(frame, h, w)
                             continue
 
-                        ahora = time.time()
-                        
- 
-                        # Cada 150ms — calcular zonas y fijaciones
+                        # Cada 150ms — calcular zonas, direccion y calibracion
                         if ahora - self._t_zonas >= 0.1:
                             zonas = self.definir_zonas(lm, h, w)
                             zona_ojos, zona_nariz, zona_boca = zonas
-
                             direccion, gaze_x_norm, gaze_y_norm = self.calcular_direccion_9zonas(lm, h, w)
-                        # Cada 150ms — calcular zonas y fijaciones
-                        if ahora - self._t_zonas >= 0.1:
-                            zonas = self.definir_zonas(lm, h, w)
-                            zona_ojos, zona_nariz, zona_boca = zonas
-
-                            direccion, gaze_x_norm, gaze_y_norm = self.calcular_direccion_9zonas(lm, h, w)
-
+                            self._actualizar_calibracion(lm)
+                         # Deteccion de emocion
+                            if self._calibrado:
+                                self._emocion_cache, self._confianza_cache = self._detectar_emocion(lm)
                             if "ARRIBA" in direccion:
                                 self._zona_cache = "OTRO"
                             elif direccion == "CENTRO":
@@ -519,23 +799,7 @@ class DetectorOcular:
 
                         zona_detectada = self._zona_cache
 
-                        # Cada 500ms — detección de emociones
-                        if ahora - self._t_emocion >= 0.1:
-                            self._emocion_cache, self._confianza_cache = self.detectar_emocion_landmarks(lm, h, w)
-                            self._t_emocion = ahora
-                            if "ARRIBA" in direccion:
-                                self._zona_cache = "OTRO"
-                            elif direccion == "CENTRO":
-                                self._zona_cache = "OJOS"
-                            elif "ABAJO" in direccion and abs(gaze_y_norm) < 0.5:
-                                self._zona_cache = "NARIZ"
-                            else:
-                                self._zona_cache = "BOCA"
-
-                            self._t_zonas = ahora
-
-                        zona_detectada = self._zona_cache
-
+                        # Dibujar zonas en cada frame
                         cv2.rectangle(frame, (zona_ojos[0],  zona_ojos[1]),  (zona_ojos[2],  zona_ojos[3]),  (255, 255, 0), 1)
                         cv2.rectangle(frame, (zona_nariz[0], zona_nariz[1]), (zona_nariz[2], zona_nariz[3]), (0, 255, 255), 1)
                         cv2.rectangle(frame, (zona_boca[0],  zona_boca[1]),  (zona_boca[2],  zona_boca[3]),  (0, 100, 255), 1)
@@ -543,14 +807,18 @@ class DetectorOcular:
                         cv2.putText(frame, "Ojos",  (zona_ojos[0],  zona_ojos[1]  - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
                         cv2.putText(frame, "Nariz", (zona_nariz[0], zona_nariz[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
                         cv2.putText(frame, "Boca",  (zona_boca[0],  zona_boca[1]  - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 100, 255), 1)
-                        cv2.putText(frame, f"Emocion: {self._emocion_cache}",(10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+
+                        cv2.putText(frame, f"Emocion: {self._emocion_cache}", (10, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+
                         self.dibujar_ojo(frame, lm, self.PARPADO_IZQ, self.IRIS_IZQ, h, w, "Ojo Izq")
                         self.dibujar_ojo(frame, lm, self.PARPADO_DER, self.IRIS_DER, h, w, "Ojo Der")
 
-                        # Enviar al dashboard
                         abierto_izq, _ = self.ojo_abierto(lm, self.PARPADO_IZQ, h, w)
                         abierto_der, _ = self.ojo_abierto(lm, self.PARPADO_DER, h, w)
                         parpadeo = self.detectar_parpadeo(abierto_izq, abierto_der)
+
+                        # Deteccion de stimming (cada frame, usa parpadeo ya calculado)
+                        self._stimming_cache, self._stimming_activo = self._detectar_stimming(lm, parpadeo)
 
                         self.send_to_dashboard(
                             gaze_x_norm, gaze_y_norm,
@@ -562,10 +830,14 @@ class DetectorOcular:
 
                         cv2.putText(frame, f"Dir: {direccion}",
                                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
                         cv2.putText(frame, f"Zona: {zona_detectada}",
                                     (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
-                        
+
+                        # Mostrar stimming en pantalla si está activo
+                        if self._stimming_activo:
+                            cv2.putText(frame, f"STIMMING: {self._stimming_cache}",
+                                        (10, 230), cv2.FONT_HERSHEY_SIMPLEX,
+                                        0.5, (0, 0, 255), 2)
 
                         tiempo_ahora = time.time()
 
@@ -585,17 +857,19 @@ class DetectorOcular:
                                         'duracion_ms': round(duracion * 1000, 1),
                                         'timestamp': datetime.now().strftime("%H:%M:%S")
                                     })
-
-                            self.zona_actual = zona_detectada
+                                    # Limitar a 500 fijaciones para no crecer sin limite en RAM
+                                    if len(self.fijaciones) > 500:
+                                        self.fijaciones.pop(0)
+                            self.zona_actual     = zona_detectada
                             self.inicio_fijacion = tiempo_ahora
 
                 if ahora - self._t_stats >= 0.5:
                     self._t_stats = ahora
 
-                self.dibujar_panel(frame, h, w) 
+                self.dibujar_panel(frame, h, w)
 
                 cv2.putText(frame, "Q: salir | R: reset plano", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
                 if results.multi_face_landmarks:
                     self.actualizar_plano(gaze_x_norm, gaze_y_norm, direccion)
@@ -605,7 +879,6 @@ class DetectorOcular:
 
                 tecla = cv2.waitKey(1) & 0xFF
 
-                # Detectar si cerraron la ventana con la X
                 if cv2.getWindowProperty('Detector de Ojos', cv2.WND_PROP_VISIBLE) < 1:
                     break
                 if tecla == ord('q') or tecla == ord('Q'):
@@ -616,5 +889,4 @@ class DetectorOcular:
 
         self.guardar_resultados()
         self.cap.release()
-        cv2.destroyAllWindows() 
-        
+        cv2.destroyAllWindows()
