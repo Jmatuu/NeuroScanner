@@ -34,7 +34,6 @@ class DetectorOcular:
     'EAR': 0, 'CORRUGADOR': 0, 'TENSION_LABIAL': 0, 'MAR': 0
 }
 
-
         self.cap = cv2.VideoCapture(0) # Configuracion de la camara 
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH,  360)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
