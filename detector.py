@@ -22,6 +22,9 @@ class DetectorOcular:
         self._t_zonas    = 0
         self._t_stats    = 0
         self._zona_cache = "OJOS"
+        self._gaze_x_cache    = 0.0
+        self._gaze_y_cache    = 0.0
+        self._direccion_cache = "CENTRO"
         # Sistema de emociones nuevo
         self._calibrado          = False
         self._buffer_calibracion = []
@@ -763,9 +766,9 @@ class DetectorOcular:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = self.face_mesh.process(rgb)
 
-                gaze_x_norm = 0.0
-                gaze_y_norm = 0.0
-                direccion   = "CENTRO"
+                gaze_x_norm = self._gaze_x_cache
+                gaze_y_norm = self._gaze_y_cache
+                direccion   = self._direccion_cache
                 ahora       = time.time()
 
                 if results.multi_face_landmarks:
@@ -781,6 +784,9 @@ class DetectorOcular:
                             zonas = self.definir_zonas(lm, h, w)
                             zona_ojos, zona_nariz, zona_boca = zonas
                             direccion, gaze_x_norm, gaze_y_norm = self.calcular_direccion_9zonas(lm, h, w)
+                            self._direccion_cache = direccion
+                            self._gaze_x_cache    = gaze_x_norm
+                            self._gaze_y_cache    = gaze_y_norm
                             self._actualizar_calibracion(lm)
                          # Deteccion de emocion
                             if self._calibrado:
